@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+jira
+python-dotenv
+selenium
+webdriver-manager
+httpx

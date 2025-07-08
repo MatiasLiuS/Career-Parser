@@ -49,23 +49,50 @@ def check_job_for_keywords(text_to_check, keywords):
     matched = [kw for kw in keywords if kw.lower() in text_lower]
     return text_lower if bool(matched) else None, matched
 
+# scraper.py
+
 def format_job_card(details, link, company_name, matched_keywords):
     """Formats the scraped data into a structured dictionary (job_card)."""
     unique_job_id = "N/A"
     
+    # --- NEW: More robust method to get the Unique Job ID ---
     try:
         parsed_url = urlparse(link)
         query_params = parse_qs(parsed_url.query)
-        if 'jobId' in query_params:
-            unique_job_id = query_params['jobId'][0]
-    except Exception:
-        pass 
-    
+        
+        # 1. Check for common query parameters first.
+        common_id_params = ['jobId', 'gh_jid', 'reqid', 'id', 'jobID', 'p_jid']
+        for param in common_id_params:
+            if param in query_params:
+                unique_job_id = query_params[param][0]
+                break
+        
+        # 2. If no parameter found, look for numerical IDs in the URL path.
+        if unique_job_id == "N/A":
+            # This regex looks for a sequence of 4 or more digits in the URL path
+            path_match = re.search(r'/(\d{4,})/?$', parsed_url.path)
+            if path_match:
+                unique_job_id = path_match.group(1)
+
+        # 3. As a final fallback, use a more general regex on the entire link.
+        if unique_job_id == "N/A":
+             # This looks for a potentially alphanumeric ID near the end of the URL
+            job_id_match = re.search(r'[=/]([a-zA-Z0-9_-]{6,})/?$', link)
+            if job_id_match:
+                unique_job_id = job_id_match.group(1)
+
+    except Exception as e:
+        print(f"  -> Could not parse Job ID from link {link}. Error: {e}")
+        # If all else fails, the ID remains "N/A"
+
+    # Prepend company name to the ID to ensure it's globally unique
+    if unique_job_id != "N/A":
+        unique_job_id = f"{company_name.upper().replace(' ', '')}-{unique_job_id}"
+
     if not isinstance(details, dict):
         return {"Company": company_name, "Job Title": "Details Extraction Failed", "Location": "N/A", "Matched Keywords": matched_keywords, "Link to Job": link, "Unique Job ID": unique_job_id}
     
     return {"Company": company_name, "Job Title": details.get("job_title", "Title Not Found"), "Location": details.get("location", "Location Not Found"), "Matched Keywords": matched_keywords, "Link to Job": link, "Unique Job ID": unique_job_id}
-
 def save_raw_data_to_json(data, filename="raw_scraper_output.json"):
     """Saves the raw, unprocessed scraped data to a JSON file for debugging."""
     print(f"\n  -> Saving {len(data)} raw scraped items to {filename}...")

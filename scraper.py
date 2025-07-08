@@ -26,22 +26,6 @@ SELENIUM_PAGE_LOADS = 0
 
 # --- Main Scraping and AI Functions ---
 
-def get_content_soup(driver, url):
-    """Uses an existing Selenium driver to fetch a webpage's full HTML content."""
-    global SELENIUM_PAGE_LOADS
-    SELENIUM_PAGE_LOADS += 1
-    
-    print(f"  -> Fetching content from: {url}")
-    try:
-        driver.get(url)
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        return BeautifulSoup(driver.page_source, 'html.parser')
-    except Exception as e:
-        print(f"  -> Selenium failed: {e}")
-        return None
-
 def check_job_for_keywords(text_to_check, keywords):
     """Checks if a string of text contains any of the specified keywords."""
     if not text_to_check: return None, []
@@ -49,43 +33,34 @@ def check_job_for_keywords(text_to_check, keywords):
     matched = [kw for kw in keywords if kw.lower() in text_lower]
     return text_lower if bool(matched) else None, matched
 
-# scraper.py
-
 def format_job_card(details, link, company_name, matched_keywords):
     """Formats the scraped data into a structured dictionary (job_card)."""
     unique_job_id = "N/A"
     
-    # --- NEW: More robust method to get the Unique Job ID ---
+    # --- More robust method to get the Unique Job ID ---
     try:
         parsed_url = urlparse(link)
         query_params = parse_qs(parsed_url.query)
         
-        # 1. Check for common query parameters first.
         common_id_params = ['jobId', 'gh_jid', 'reqid', 'id', 'jobID', 'p_jid']
         for param in common_id_params:
             if param in query_params:
                 unique_job_id = query_params[param][0]
                 break
         
-        # 2. If no parameter found, look for numerical IDs in the URL path.
         if unique_job_id == "N/A":
-            # This regex looks for a sequence of 4 or more digits in the URL path
             path_match = re.search(r'/(\d{4,})/?$', parsed_url.path)
             if path_match:
                 unique_job_id = path_match.group(1)
 
-        # 3. As a final fallback, use a more general regex on the entire link.
         if unique_job_id == "N/A":
-             # This looks for a potentially alphanumeric ID near the end of the URL
             job_id_match = re.search(r'[=/]([a-zA-Z0-9_-]{6,})/?$', link)
             if job_id_match:
                 unique_job_id = job_id_match.group(1)
 
     except Exception as e:
         print(f"  -> Could not parse Job ID from link {link}. Error: {e}")
-        # If all else fails, the ID remains "N/A"
 
-    # Prepend company name to the ID to ensure it's globally unique
     if unique_job_id != "N/A":
         unique_job_id = f"{company_name.upper().replace(' ', '')}-{unique_job_id}"
 
@@ -93,6 +68,7 @@ def format_job_card(details, link, company_name, matched_keywords):
         return {"Company": company_name, "Job Title": "Details Extraction Failed", "Location": "N/A", "Matched Keywords": matched_keywords, "Link to Job": link, "Unique Job ID": unique_job_id}
     
     return {"Company": company_name, "Job Title": details.get("job_title", "Title Not Found"), "Location": details.get("location", "Location Not Found"), "Matched Keywords": matched_keywords, "Link to Job": link, "Unique Job ID": unique_job_id}
+
 def save_raw_data_to_json(data, filename="raw_scraper_output.json"):
     """Saves the raw, unprocessed scraped data to a JSON file for debugging."""
     print(f"\n  -> Saving {len(data)} raw scraped items to {filename}...")
@@ -119,57 +95,76 @@ def validate_and_format_jobs(all_job_details, company):
             found_jobs.append(job_card)
     return found_jobs
 
-# --- Parser Strategy Greenhouse ---
-async def fetch_greenhouse_details_async(client, iframe_url, original_link):
-    """Asynchronously fetches and parses the content from a Greenhouse iframe URL."""
-    try:
-        response = await client.get(iframe_url, timeout=15)
-        response.raise_for_status()
-        details_soup = BeautifulSoup(response.text, 'html.parser')
-
-        title_element = details_soup.select_one('.job__title h1')
-        title = title_element.get_text(strip=True) if title_element else "Title Not Found"
-        
-        location_element = details_soup.select_one('.job__title .job__location div')
-        location = location_element.get_text(strip=True) if location_element else "Location Not Found"
-        
-        description_element = details_soup.select_one('.job__description')
-        description = description_element.get_text(strip=True) if description_element else ""
-        
-        return {"link": original_link, "title": title, "location": location, "description": description}
-    except Exception as e:
-        print(f"  -> Failed to fetch iframe content from {iframe_url}: {e}")
-        return None
-
-async def parse_strategy_greenhouse(driver, soup, company):
+# --- NEW: Parser Strategy Greenhouse API (Efficient & More Robust) ---
+async def parse_strategy_greenhouse_api(soup, company):
     """
-    Asynchronously fetches all job details from a Greenhouse board by using Selenium
-    to get the iframe URLs, then fetching the content with httpx.
+    Fetches all job details from a Greenhouse board using its JSON API.
+    This is much faster and more reliable than using Selenium.
     """
-    print("  -> Using Hybrid Greenhouse iframe parsing strategy.")
+    print("  -> Using Greenhouse API parsing strategy.")
     
-    job_links = [urljoin(company['careers_url'], a['href']) for a in soup.select('a.board-list__item[href*="gh_jid="]')]
-    print(f"    -> Found {len(job_links)} potential job links on the main page.")
+    board_token = None
+    
+    # Method 1: Try to find the board token from the standard script tag.
+    script_tag = soup.find('script', src=re.compile(r'boards.greenhouse.io/embed/job_board'))
+    if script_tag:
+        match = re.search(r'job_board\?for=([^&]+)', script_tag['src'])
+        if match:
+            board_token = match.group(1)
+            print("    -> Found board token via script tag.")
 
-    iframe_data = []
-    print(f"\n  -> Visiting {len(job_links)} pages to find iframe URLs...")
-    for link in job_links:
-        try:
-            driver.get(link)
-            iframe = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "grnhse_iframe"))
-            )
-            iframe_src = iframe.get_attribute('src')
-            if iframe_src:
-                iframe_data.append((iframe_src, link))
-        except Exception as e:
-            print(f"    -> Could not get iframe src for {link}: {e}")
+    # Method 2: If the script isn't found, guess the token from the company name.
+    if not board_token:
+        print("    -> Script tag not found. Guessing board token from company name.")
+        # Sanitize the company name to create a likely token.
+        # Example: "Dev Technology " -> "devtechnology"
+        board_token = re.sub(r'[^a-z0-9]', '', company['company_name'].lower().strip())
+        if not board_token:
+            print("  -> ❌ Could not create a valid board token from the company name.")
+            return []
 
+    print(f"    -> Using board token: {board_token}")
+    api_url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs?content=true"
+    
     async with httpx.AsyncClient() as client:
-        tasks = [fetch_greenhouse_details_async(client, iframe_url, original_link) for iframe_url, original_link in iframe_data]
-        print(f"\n  -> Fetching details from {len(tasks)} iframes concurrently...")
-        results = await asyncio.gather(*tasks)
-        return [res for res in results if res]
+        try:
+            print(f"    -> Querying API: {api_url}")
+            response = await client.get(api_url, timeout=30)
+            response.raise_for_status()
+            api_data = response.json()
+            
+            all_job_details = []
+            for job in api_data.get('jobs', []):
+                # The API provides a full job description, but we need to fetch it
+                # if the `content` field is not included in this basic response.
+                job_content = job.get('content')
+                if not job_content and job.get('id'):
+                    # Fetch detailed content if not present
+                    detail_api_url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job.get('id')}"
+                    detail_response = await client.get(detail_api_url)
+                    if detail_response.status_code == 200:
+                        job_content = detail_response.json().get('content', '')
+                
+                description_soup = BeautifulSoup(job_content or '', 'html.parser')
+                
+                all_job_details.append({
+                    "title": job.get('title', 'Title Not Found').strip(),
+                    "location": job.get('location', {}).get('name', 'Location Not Found').strip(),
+                    "link": job.get('absolute_url', '#').strip(),
+                    "description": description_soup.get_text(" ", strip=True)
+                })
+            print(f"    -> Successfully fetched {len(all_job_details)} jobs from the API.")
+            return all_job_details
+        except httpx.HTTPStatusError as e:
+            print(f"  -> ❌ Failed to fetch data from Greenhouse API. Status: {e.response.status_code}. URL: {api_url}")
+            return []
+        except httpx.RequestError as e:
+            print(f"  -> ❌ Network error while fetching from Greenhouse API: {e}")
+            return []
+        except json.JSONDecodeError:
+            print("  -> ❌ Failed to parse JSON response from Greenhouse API.")
+            return []
+
 
 # --- Parser Strategy Paylocity ---
 async def fetch_paylocity_details_async(client, link):
@@ -218,7 +213,6 @@ async def parse_strategy_adp_clickthrough(driver, company):
     all_job_details = []
     initial_url = driver.current_url
 
-    # 1. Click "View All" button if it exists
     try:
         view_all_button = WebDriverWait(driver, 5).until(
             EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "View all")] | //sdf-button[contains(text(), "View all")]'))
@@ -229,14 +223,12 @@ async def parse_strategy_adp_clickthrough(driver, company):
     except TimeoutException:
         print("    -> 'View all' button not found, proceeding.")
 
-    # 2. Get the initial count of jobs
     job_item_selector = (By.CLASS_NAME, "current-openings-item")
     list_container_selector = (By.CLASS_NAME, "current-openings-list")
     WebDriverWait(driver, 10).until(EC.presence_of_element_located(list_container_selector))
     num_jobs = len(driver.find_elements(*job_item_selector))
     print(f"    -> Found {num_jobs} job items to process.")
 
-    # 3. Loop through each job by index
     for i in range(num_jobs):
         try:
             WebDriverWait(driver, 10).until(EC.presence_of_element_located(list_container_selector))
@@ -253,7 +245,6 @@ async def parse_strategy_adp_clickthrough(driver, company):
             WebDriverWait(driver, 15).until(EC.url_contains("jobId="))
             job_link = driver.current_url
 
-            # Scrape all details from the detail page
             print("      -> Scraping full details...")
             details_soup = BeautifulSoup(driver.page_source, 'html.parser')
             
@@ -280,11 +271,9 @@ async def parse_strategy_adp_clickthrough(driver, company):
                 "description": description 
             })
 
-            # Reload the main page for the next loop
             print("      -> Reloading main job list...")
             driver.get(initial_url)
             
-            # Re-click "View All" if it exists
             try:
                 view_all_button = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "View all")] | //sdf-button[contains(text(), "View all")]'))
@@ -303,28 +292,50 @@ async def parse_strategy_adp_clickthrough(driver, company):
 
 # --- Main Processing Controller ---
 async def process_company(driver, company):
-    """Controller function that selects the correct parsing strategy based on the URL."""
+    """Controller function that selects the correct parsing strategy based on the URL or page content."""
+    global SELENIUM_PAGE_LOADS
     print(f"\n{'='*20}\nProcessing: {company['company_name']}")
     print(f"Keywords: {', '.join(company['keywords'])}\n{'='*20}")
     
-    # We still need to navigate to the page for the scraper to work.
+    # Load the initial page for all strategies.
+    print(f"  -> Navigating to: {company['careers_url']}")
     driver.get(company['careers_url'])
+    SELENIUM_PAGE_LOADS += 1
     
-    # --- UPDATED: Strategy Selection ---
     all_job_details = []
-    if 'recruiting.paylocity.com' in company['careers_url']:
-        main_content_soup = BeautifulSoup(driver.page_source, 'html.parser')
-        all_job_details = await parse_strategy_paylocity(main_content_soup, company)
-    elif 'devtechnology.com' in company['careers_url']: # Example for Greenhouse
-        main_content_soup = BeautifulSoup(driver.page_source, 'html.parser')
-        all_job_details = await parse_strategy_greenhouse(driver, main_content_soup, company)
-    elif 'workforcenow.adp.com' in company['careers_url']:
-        # Use the robust click-through strategy
+    
+    # --- REFINED STRATEGY SELECTION ---
+    
+    # Strategy 1: Check for Paylocity by URL
+    if 'recruiting.paylocity.com' in driver.current_url:
+        print("  -> Paylocity site detected. Using concurrent fetch strategy.")
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        all_job_details = await parse_strategy_paylocity(soup, company)
+    
+    # Strategy 2: Check for ADP by URL
+    elif 'workforcenow.adp.com' in driver.current_url:
+        print("  -> ADP site detected. Using click-through strategy.")
         all_job_details = await parse_strategy_adp_clickthrough(driver, company)
+        
+    # Default Strategy: Check for a Greenhouse integration
     else:
-        print("  -> ⚠️ No specific parsing strategy found for this site. No jobs will be processed.")
+        try:
+            # Wait for an element that indicates a Greenhouse board is present.
+            # This is more flexible and covers both standard and custom integrations.
+            # It checks for the standard div ID OR the specific link class you found.
+            print("  -> Checking for Greenhouse job board...")
+            greenhouse_indicator_xpath = "//*[@id='grnhse_app'] | //a[contains(@class, 'board-list__item')]"
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, greenhouse_indicator_xpath))
+            )
+            print("  -> Greenhouse job board detected. Using API strategy.")
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            all_job_details = await parse_strategy_greenhouse_api(soup, company)
+        except TimeoutException:
+            # If no indicator is found, we assume no strategy applies.
+            print("  -> ⚠️ No specific parsing strategy found for this site. No jobs will be processed.")
+            all_job_details = []
 
-    # Print and save raw output
     if all_job_details:
         save_raw_data_to_json(all_job_details)
 

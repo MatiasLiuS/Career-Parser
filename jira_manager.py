@@ -1,7 +1,8 @@
 # jira_manager.py
 # This module handles all interactions with the Jira API.
-#test
+
 import os
+import asyncio
 from jira import JIRA
 
 # --- Load Jira-specific environment variables ---
@@ -15,7 +16,7 @@ JIRA_FIELD_COMPANY_NAME = os.getenv("JIRA_FIELD_COMPANY_NAME")
 JIRA_FIELD_CAREERS_URL = os.getenv("JIRA_FIELD_CAREERS_URL")
 JIRA_FIELD_KEYWORDS = os.getenv("JIRA_FIELD_KEYWORDS")
 
-# --- Ticket Counters ---
+# --- Ticket Counters (ensure thread safety if not using asyncio.to_thread) ---
 CREATED_TICKETS = 0
 UPDATED_TICKETS = 0
 
@@ -72,7 +73,6 @@ def find_existing_output_ticket(jira_client, job_id):
     if not job_id or job_id == "N/A": 
         return None
     
-    # --- FIX: Using a more robust JQL query to find the job ID ---
     # This searches for the exact job ID string anywhere in the description.
     jql = f'project = "{JIRA_OUTPUT_PROJECT_KEY}" AND description ~ "{job_id}"'
     
@@ -111,7 +111,6 @@ h3. Unique Job ID
 {job_card['Unique Job ID']}
 """
     
-    # --- FIX: Logic to update existing tickets instead of creating duplicates ---
     existing_ticket = find_existing_output_ticket(jira_client, job_card["Unique Job ID"])
     
     if existing_ticket:
@@ -124,7 +123,6 @@ h3. Unique Job ID
             print(f"  -> ❌ Failed to update ticket {existing_ticket.key}: {e}")
         return
 
-    # If no existing ticket is found, create a new one
     issue_dict = {
         'project': {'key': JIRA_OUTPUT_PROJECT_KEY},
         'summary': summary,
@@ -137,3 +135,16 @@ h3. Unique Job ID
         CREATED_TICKETS += 1
     except Exception as e:
         print(f"  -> ❌ Failed to create output ticket for '{summary}': {e}")
+
+
+# --- NEW Asynchronous Wrapper Function ---
+
+async def create_output_ticket_async(jira_client, job_card):
+    """
+    Asynchronously creates or updates a Jira ticket by running the synchronous
+    blocking calls in a separate thread.
+    """
+    # asyncio.to_thread runs the synchronous function (and its network calls)
+    # in a separate thread, preventing it from blocking the asyncio event loop.
+    # This allows us to run many ticket creations/updates concurrently.
+    await asyncio.to_thread(create_output_ticket, jira_client, job_card)

@@ -51,13 +51,7 @@ async def main():
     if not targets:
         log_message("No new requests found in Jira. Exiting.")
         return
-
-    log_message("--- Handing off to AI-Powered Scraping Engine ---")
-    # Check for Gemini API key, though it may not be used by all strategies
-    if not os.getenv("GEMINI_API_KEY"):
-        log_message("\n❌ FATAL ERROR: 'GEMINI_API_KEY' not found in your .env file.")
-        return
-
+    
     # --- Step 5: Initialize a Single, Persistent Browser Session ---
     # This is more stable and efficient than creating a new browser for every request.
     log_message("-> Initializing persistent browser session...")
@@ -93,15 +87,20 @@ async def main():
     if all_found_jobs:
         # Save results to a local file for debugging and review
         save_results_to_json(all_found_jobs)
+        
         # Loop through the found jobs and create or update tickets in Jira
         log_message(f"--- Found {len(all_found_jobs)} total jobs. Creating/Updating tickets in '{jira_manager.JIRA_OUTPUT_PROJECT_KEY}' project. ---")
-        for job_card in all_found_jobs:
-            jira_manager.create_output_ticket(jira_client, job_card)
+        
+        # 1. Create a list of all the async tasks to be run
+        tasks = [jira_manager.create_output_ticket_async(jira_client, job_card) for job_card in all_found_jobs]
+        
+        # 2. Run all tasks concurrently and wait for them to complete
+        await asyncio.gather(*tasks)
+
     
     # --- Step 10: Print Final Summary ---
     log_message("--- Request Summary ---")
     print(f"Total Selenium page loads: {scraper.SELENIUM_PAGE_LOADS}")
-    print(f"Total Gemini API calls: {scraper.GEMINI_REQUEST_COUNT}")
     print(f"Jira Tickets Created: {jira_manager.CREATED_TICKETS}")
     print(f"Jira Tickets Updated: {jira_manager.UPDATED_TICKETS}")
             

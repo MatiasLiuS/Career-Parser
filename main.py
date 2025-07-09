@@ -7,9 +7,12 @@ import json
 import asyncio
 import datetime  # Import the datetime module
 from dotenv import load_dotenv
-from selenium import webdriver
+from seleniumwire import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
+
+
+
 
 # --- Step 1: Load Environment Variables ---
 # This MUST be the first step to ensure all API keys and configurations
@@ -56,9 +59,11 @@ async def main():
     # This is more stable and efficient than creating a new browser for every request.
     log_message("-> Initializing persistent browser session...")
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")  # Use modern headless mode
+    options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--log-level=3") # Suppress console noise
     driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
     log_message("-> Browser session initialized.")
     
@@ -71,12 +76,12 @@ async def main():
             company_results = await scraper.process_company(driver, company)
             all_found_jobs.extend(company_results)
             
-            # --- Step 7: Update the Original Jira Request Ticket ---
-            company_name = company['company_name']
-            if company_name in issue_map:
-                issue_key_to_update = issue_map[company_name]
-                log_message(f"Processing complete for {company_name}. Updating Jira ticket {issue_key_to_update}.")
-                jira_manager.transition_jira_issue(jira_client, issue_key_to_update, "Done")
+            # # --- Step 7: Update the Original Jira Request Ticket ---
+            # company_name = company['company_name']
+            # if company_name in issue_map:
+            #     issue_key_to_update = issue_map[company_name]
+            #     log_message(f"Processing complete for {company_name}. Updating Jira ticket {issue_key_to_update}.")
+            #     jira_manager.transition_jira_issue(jira_client, issue_key_to_update, "Done")
     finally:
         # --- Step 8: Close the Browser Session ---
         log_message("-> Closing persistent browser session.")

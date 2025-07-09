@@ -21,7 +21,8 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 # --- Import the modularized strategies ---
 from paylocity_strategy import parse_strategy_paylocity
 from greenhouse_strategy import parse_strategy_greenhouse_api
-
+from adp_strategy import parse_adp_job_pages
+from get_links import get_adp_job_links
 
 # --- Request Counters ---
 GEMINI_REQUEST_COUNT = 0 
@@ -120,12 +121,24 @@ async def process_company(driver, company):
     
     # --- STRATEGY SELECTION ---
     
-    # Strategy 1: Check for Paylocity by URL
+    
+
     if 'recruiting.paylocity.com' in driver.current_url:
         print("  -> Paylocity site detected. Using concurrent fetch strategy.")
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         all_job_details = await parse_strategy_paylocity(soup, company)
+    # Strategy 1: Check for Paylocity by URL
+      # --- MODIFICATION: Add ADP strategy ---
+    elif 'workforcenow.adp.com' in driver.current_url:
+        print("  -> ADP site detected. Using API Intercept strategy.")
+        cid = "750c862e-b802-49e4-952d-5049b07cf887"
+        ccid = "19000101_000001"
+        company_url ="https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=750c862e-b802-49e4-952d-5049b07cf887&ccId=19000101_000001&lang=en_US&selectedMenuKey=CareerCenter"
         
+        job_links = get_adp_job_links(company_url, cid, ccid)
+
+  
+        all_job_details = await parse_adp_job_pages(driver, job_links)
     # Strategy 2: Check for a Greenhouse integration on the page
     else:
         try:
@@ -143,7 +156,7 @@ async def process_company(driver, company):
             print("  -> ⚠️ No specific parsing strategy found for this site. No jobs will be processed.")
             all_job_details = []
 
-    if all_job_details:
-        save_raw_data_to_json(all_job_details)
+    # if all_job_details:
+    #     save_raw_data_to_json(all_job_details)
 
     return validate_and_format_jobs(all_job_details, company)
